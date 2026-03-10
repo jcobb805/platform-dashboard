@@ -135,6 +135,7 @@
   <button data-t="checks">Check Volume</button>
   <button data-t="operators">Operators</button>
   <button data-t="entity">Entity Explorer</button>
+  <button data-t="outliers">Payment Alerts</button>
 </nav>
 
 <div class="wrap">
@@ -222,6 +223,46 @@
       <div class="tile"><h3>Monthly Detail</h3><div class="sub">Click any row to view individual transactions</div><div style="overflow-x:auto"><table class="dt"><thead><tr>
         <th>Month</th><th class="n">Deposits</th><th class="n">ACH</th><th class="n">Checks</th><th class="n">Total Txns</th>
       </tr></thead><tbody id="e-tbody"></tbody></table></div></div>
+    </div>
+  </div>
+
+  <!-- PAYMENT ALERTS -->
+  <div class="pane" id="p-outliers">
+    <div class="kpis" id="out-kpis"></div>
+    <div class="tile">
+      <h3>Payment Alerts</h3>
+      <div class="sub">Operators flagged for missing payments, unusual amounts, or new activity &mdash; based on historical patterns per entity</div>
+      <div style="margin-bottom:14px;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+        <label style="font-size:.78rem;color:var(--text-2);font-weight:600">Filter:</label>
+        <select id="out-type-filter" style="padding:6px 12px;font-size:.82rem;border:1px solid var(--border);border-radius:6px;background:var(--card);color:var(--text-1);cursor:pointer;font-family:inherit">
+          <option value="all">All Alerts</option>
+          <option value="missing">Missing Payments</option>
+          <option value="late">Late Payments</option>
+          <option value="high">Unusually High</option>
+          <option value="low">Unusually Low</option>
+          <option value="new">New Operator</option>
+        </select>
+        <select id="out-ent-filter" style="padding:6px 12px;font-size:.82rem;border:1px solid var(--border);border-radius:6px;background:var(--card);color:var(--text-1);cursor:pointer;font-family:inherit;min-width:200px">
+          <option value="all">All Entities</option>
+        </select>
+      </div>
+      <div style="overflow-x:auto"><table class="dt" id="out-tbl">
+        <thead><tr>
+          <th data-s="sev" style="width:36px"></th>
+          <th data-s="entity">Entity</th>
+          <th data-s="operator">Operator</th>
+          <th data-s="type">Alert Type</th>
+          <th class="n" data-s="avg">Avg Payment</th>
+          <th class="n" data-s="latest">Latest</th>
+          <th class="n" data-s="delta">Change</th>
+          <th data-s="detail">Detail</th>
+        </tr></thead>
+        <tbody id="out-tbody"></tbody>
+      </table></div>
+    </div>
+    <div class="g2">
+      <div class="tile"><h3>Alerts by Type</h3><div class="sub">Distribution of alert categories</div><div class="cw" style="height:280px"><canvas id="out-type-chart"></canvas></div></div>
+      <div class="tile"><h3>Top Entities by Alert Count</h3><div class="sub">Entities with the most flagged operators</div><div class="cw" style="height:280px"><canvas id="out-ent-chart"></canvas></div></div>
     </div>
   </div>
 </div>
@@ -3528,6 +3569,7 @@ function initTab(id){
     case 'overview':initOverview();break;case 'deposits':initDeposits();break;
     case 'ach':initACH();break;case 'checks':initChecks();break;
     case 'operators':initOperators();break;case 'entity':initEntity();break;
+    case 'outliers':initOutliers();break;
   }
 }
 
@@ -3770,6 +3812,217 @@ function showTxns(entityName,monthIdx,opFilter){
 function closeTxnModal(){$('txn-modal').style.display='none'}
 document.addEventListener('keydown',e=>{if(e.key==='Escape')closeTxnModal()});
 document.addEventListener('click',e=>{if(e.target.id==='txn-modal')closeTxnModal()});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// PAYMENT ALERTS (OUTLIER DETECTION)
+// ═════════════════════════════════════════════════════════════════════════════
+function initOutliers(){
+  const lastComplete = NM - 2;
+  const alerts = [];
+
+  Object.keys(TXN).forEach(entity => {
+    const eTxn = TXN[entity] || {};
+    const opMap = {};
+    for(let mi = 0; mi < NM; mi++){
+      (eTxn[mi]||[]).forEach(t => {
+        const op = t[1], amt = t[3];
+        if(!opMap[op]) opMap[op] = Array(NM).fill(0);
+        opMap[op][mi] += amt;
+      });
+    }
+
+    Object.keys(opMap).forEach(op => {
+      const monthly = opMap[op];
+      const paidMonths = [];
+      const paidIdxs = [];
+      for(let i = 0; i <= lastComplete; i++){
+        if(monthly[i] > 0){ paidMonths.push(monthly[i]); paidIdxs.push(i); }
+      }
+      if(paidMonths.length === 0) return;
+
+      const avg = paidMonths.reduce((a,b) => a+b, 0) / paidMonths.length;
+      const latestVal = monthly[lastComplete];
+      const stddev = paidMonths.length > 1
+        ? Math.sqrt(paidMonths.reduce((s,v) => s + (v-avg)*(v-avg), 0) / (paidMonths.length-1))
+        : 0;
+
+      // MISSING PAYMENT — paid in 3+ months but $0 in most recent complete month
+      if(paidMonths.length >= 3 && latestVal === 0){
+        const recentPaid = [2,3,4,5].filter(i => i <= lastComplete && monthly[i] > 0).length;
+        if(recentPaid >= 2){
+          alerts.push({
+            entity, operator: op, type: 'missing', sev: 3,
+            avg, latest: 0, delta: -100,
+            detail: 'No payment in ' + ML[lastComplete] + '. Paid ' + paidMonths.length + ' of ' + (lastComplete+1) + ' prior months (avg ' + fc(Math.round(avg)) + ').'
+          });
+        }
+      }
+
+      // LATE PAYMENT — paid in most recent month but skipped the one before
+      if(paidMonths.length >= 3 && lastComplete >= 2 && latestVal > 0 && monthly[lastComplete-1] === 0){
+        const priorPaid = paidIdxs.filter(i => i < lastComplete-1).length;
+        if(priorPaid >= 2){
+          alerts.push({
+            entity, operator: op, type: 'late', sev: 2,
+            avg, latest: latestVal, delta: Math.round((latestVal - avg)/avg*100),
+            detail: 'Paid ' + fc(Math.round(latestVal)) + ' in ' + ML[lastComplete] + ' after missing ' + ML[lastComplete-1] + '. May include catch-up.'
+          });
+        }
+      }
+
+      // UNUSUALLY HIGH — latest > mean + 2*stddev
+      if(paidMonths.length >= 3 && latestVal > 0 && stddev > 0){
+        const threshold = avg + 2 * stddev;
+        if(latestVal > threshold && latestVal > avg * 1.8){
+          const pctChg = Math.round((latestVal - avg) / avg * 100);
+          alerts.push({
+            entity, operator: op, type: 'high', sev: 1,
+            avg, latest: latestVal, delta: pctChg,
+            detail: ML[lastComplete] + ': ' + fc(Math.round(latestVal)) + ' vs avg ' + fc(Math.round(avg)) + ' (+' + pctChg + '%). Possible new well or catch-up payment.'
+          });
+        }
+      }
+
+      // UNUSUALLY LOW — latest < mean - 2*stddev
+      if(paidMonths.length >= 3 && latestVal > 0 && stddev > 0){
+        const threshold = avg - 2 * stddev;
+        if(latestVal < threshold && latestVal < avg * 0.4){
+          const pctChg = Math.round((latestVal - avg) / avg * 100);
+          alerts.push({
+            entity, operator: op, type: 'low', sev: 2,
+            avg, latest: latestVal, delta: pctChg,
+            detail: ML[lastComplete] + ': ' + fc(Math.round(latestVal)) + ' vs avg ' + fc(Math.round(avg)) + ' (' + pctChg + '%). Significant drop in payment.'
+          });
+        }
+      }
+
+      // NEW OPERATOR — only appeared in the last 2 complete months
+      if(paidIdxs.length >= 1 && paidIdxs.length <= 2 && paidIdxs[0] >= lastComplete - 1){
+        const total = paidMonths.reduce((a,b) => a+b, 0);
+        if(total >= 500){
+          alerts.push({
+            entity, operator: op, type: 'new', sev: 1,
+            avg: total/paidMonths.length, latest: latestVal || paidMonths[paidMonths.length-1],
+            delta: 0,
+            detail: 'New operator. First payment ' + ML[paidIdxs[0]] + (paidIdxs.length>1 ? ', also ' + ML[paidIdxs[1]] : '') + '. Total: ' + fc(Math.round(total)) + '.'
+          });
+        }
+      }
+    });
+  });
+
+  alerts.sort((a,b) => b.sev - a.sev || Math.abs(b.delta) - Math.abs(a.delta));
+
+  // KPIs
+  const nMissing = alerts.filter(a=>a.type==='missing').length;
+  const nLate = alerts.filter(a=>a.type==='late').length;
+  const nHigh = alerts.filter(a=>a.type==='high').length;
+  const nLow = alerts.filter(a=>a.type==='low').length;
+  const nNew = alerts.filter(a=>a.type==='new').length;
+  const missedRev = alerts.filter(a=>a.type==='missing').reduce((s,a)=>s+a.avg,0);
+  $('out-kpis').innerHTML =
+    '<div class="kpi r"><div class="l">Missing Payments</div><div class="v">' + nMissing + '</div><div class="d">Operators with $0 in ' + ML[lastComplete] + '</div></div>' +
+    '<div class="kpi a"><div class="l">Late Payments</div><div class="v">' + nLate + '</div><div class="d">Paid after skipping a month</div></div>' +
+    '<div class="kpi g"><div class="l">Unusually High</div><div class="v">' + nHigh + '</div><div class="d">Possible new wells or catch-ups</div></div>' +
+    '<div class="kpi p"><div class="l">Unusually Low</div><div class="v">' + nLow + '</div><div class="d">Significant payment drops</div></div>' +
+    '<div class="kpi"><div class="l">New Operators</div><div class="v">' + nNew + '</div><div class="d">First appeared recently</div></div>' +
+    '<div class="kpi t"><div class="l">Est. Missing Revenue</div><div class="v">' + fc(Math.round(missedRev)) + '</div><div class="d">Based on avg of missing operators</div></div>';
+
+  // Populate entity filter
+  var entSet = []; var seen = {};
+  alerts.forEach(function(a){ if(!seen[a.entity]){ seen[a.entity]=1; entSet.push(a.entity); }});
+  entSet.sort();
+  var entSel = $('out-ent-filter');
+  entSet.forEach(function(e){ var o = document.createElement('option'); o.value = e; o.textContent = e; entSel.appendChild(o); });
+
+  // Render
+  var typeLabels = {missing:'Missing Payment',late:'Late Payment',high:'Unusually High',low:'Unusually Low','new':'New Operator'};
+  var typeColors = {missing:'#ef4444',late:'#f59e0b',high:'#10b981',low:'#8b5cf6','new':'#3b82f6'};
+  var sevIcons = {'3':'\u{1F534}','2':'\u{1F7E1}','1':'\u{1F7E2}'};
+
+  function renderAlerts(filtered){
+    var tbody = $('out-tbody');
+    if(filtered.length === 0){
+      tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--text-3);padding:40px">No alerts match the current filters</td></tr>';
+      return;
+    }
+    tbody.innerHTML = filtered.map(function(a){
+      return '<tr class="click" onclick="goEntity(\'' + a.entity.replace(/'/g,"\\'") + '\')">' +
+        '<td style="text-align:center;font-size:1.1rem">' + (sevIcons[a.sev]||'') + '</td>' +
+        '<td class="en">' + a.entity + '</td>' +
+        '<td>' + a.operator + '</td>' +
+        '<td><span style="display:inline-block;padding:2px 10px;border-radius:10px;font-size:.72rem;font-weight:600;background:' + (typeColors[a.type]||'var(--border)') + ';color:#fff">' + (typeLabels[a.type]||a.type) + '</span></td>' +
+        '<td class="n">$' + Math.round(a.avg).toLocaleString() + '</td>' +
+        '<td class="n">' + (a.latest > 0 ? '$'+Math.round(a.latest).toLocaleString() : '\u2014') + '</td>' +
+        '<td class="n" style="color:' + (a.delta > 0 ? 'var(--green)' : a.delta < 0 ? 'var(--red)' : 'var(--text-3)') + '">' + (a.delta > 0 ? '+' : '') + (a.delta !== 0 ? a.delta + '%' : '\u2014') + '</td>' +
+        '<td style="font-size:.78rem;color:var(--text-2);max-width:320px">' + a.detail + '</td></tr>';
+    }).join('');
+  }
+  renderAlerts(alerts);
+
+  // Filters
+  function applyFilters(){
+    var typeVal = $('out-type-filter').value;
+    var entVal = $('out-ent-filter').value;
+    var filtered = alerts.filter(function(a){ return (typeVal === 'all' || a.type === typeVal) && (entVal === 'all' || a.entity === entVal); });
+    renderAlerts(filtered);
+  }
+  $('out-type-filter').addEventListener('change', applyFilters);
+  $('out-ent-filter').addEventListener('change', applyFilters);
+
+  // Doughnut chart — alerts by type
+  var typeCounts = {missing:nMissing, late:nLate, high:nHigh, low:nLow, 'new':nNew};
+  var typeKeys = Object.keys(typeCounts).filter(function(k){return typeCounts[k]>0});
+  new Chart($('out-type-chart'), {
+    type:'doughnut',
+    data:{
+      labels: typeKeys.map(function(k){return typeLabels[k]}),
+      datasets:[{data:typeKeys.map(function(k){return typeCounts[k]}),backgroundColor:typeKeys.map(function(k){return typeColors[k]}),borderWidth:2,borderColor:'#1a1a1a'}]
+    },
+    options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'bottom',labels:{color:TK,font:FONT,padding:14}},tooltip:TT,datalabels:{display:false}}}
+  });
+
+  // Bar chart — top entities by alert count
+  var entCounts = {};
+  alerts.forEach(function(a){ entCounts[a.entity] = (entCounts[a.entity]||0) + 1; });
+  var entSorted = Object.entries(entCounts).sort(function(a,b){return b[1]-a[1]}).slice(0,10);
+  new Chart($('out-ent-chart'), {
+    type:'bar',
+    data:{
+      labels: entSorted.map(function(e){return e[0]}),
+      datasets:[{data:entSorted.map(function(e){return e[1]}),backgroundColor:entSorted.map(function(_,i){return PAL[i%PAL.length]}),borderRadius:4,borderSkipped:false}]
+    },
+    options:{
+      indexAxis:'y',responsive:true,maintainAspectRatio:false,
+      scales:{x:{grid:{color:GR},ticks:{color:TK,font:FONT}},y:{grid:{display:false},ticks:{color:TK,font:{family:FONT.family,size:11}}}},
+      plugins:{legend:{display:false},tooltip:TT,datalabels:{display:false}}
+    }
+  });
+
+  // Table sorting
+  document.querySelectorAll('#out-tbl thead th[data-s]').forEach(function(th){
+    th.addEventListener('click', function(){
+      var key = th.dataset.s;
+      var asc = th.classList.contains('asc');
+      document.querySelectorAll('#out-tbl thead th').forEach(function(h){h.classList.remove('asc','desc')});
+      th.classList.add(asc ? 'desc' : 'asc');
+      var dir = asc ? -1 : 1;
+      var getVal = {
+        sev: function(a){return a.sev}, entity: function(a){return a.entity.toLowerCase()}, operator: function(a){return a.operator.toLowerCase()},
+        type: function(a){return a.type}, avg: function(a){return a.avg}, latest: function(a){return a.latest}, delta: function(a){return Math.abs(a.delta)}, detail: function(a){return a.detail}
+      }[key] || function(){return 0};
+      var typeVal = $('out-type-filter').value;
+      var entVal = $('out-ent-filter').value;
+      var filtered = alerts.filter(function(a){ return (typeVal === 'all' || a.type === typeVal) && (entVal === 'all' || a.entity === entVal); });
+      filtered.sort(function(a,b){
+        var va=getVal(a), vb=getVal(b);
+        if(typeof va === 'string') return dir * va.localeCompare(vb);
+        return dir * (va - vb);
+      });
+      renderAlerts(filtered);
+    });
+  });
+}
 
 // ═════════════════════════════════════════════════════════════════════════════
 // NAVIGATION
