@@ -235,7 +235,7 @@
     </div>
     <div class="tile">
       <h3>Payment Alerts</h3>
-      <div class="sub">Operators flagged for missing payments, unusual amounts, or new activity &mdash; based on historical patterns per entity</div>
+      <div class="sub">Evaluating <strong id="out-eval-month"></strong> against each operator's historical pattern (Aug 2025 &ndash; Jan 2026). Alerts flag deviations from established payment behavior.</div>
       <div style="margin-bottom:14px;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
         <label style="font-size:.78rem;color:var(--text-2);font-weight:600">Filter:</label>
         <select id="out-type-filter" style="padding:6px 12px;font-size:.82rem;border:1px solid var(--border);border-radius:6px;background:var(--card);color:var(--text-1);cursor:pointer;font-family:inherit">
@@ -3854,7 +3854,7 @@ function initOutliers(){
           alerts.push({
             entity, operator: op, type: 'missing', sev: 3,
             avg, latest: 0, delta: -100,
-            detail: 'No payment in ' + ML[lastComplete] + '. Paid ' + paidMonths.length + ' of ' + (lastComplete+1) + ' prior months (avg ' + fc(Math.round(avg)) + ').'
+            detail: 'No payment in ' + ML[lastComplete] + '. Paid ' + paidMonths.length + ' of ' + (lastComplete+1) + ' months since ' + ML[0] + ' (avg ' + fc(Math.round(avg)) + '/mo). Last paid: ' + ML[paidIdxs[paidIdxs.length-1]] + '.'
           });
         }
       }
@@ -3866,7 +3866,7 @@ function initOutliers(){
           alerts.push({
             entity, operator: op, type: 'late', sev: 2,
             avg, latest: latestVal, delta: Math.round((latestVal - avg)/avg*100),
-            detail: 'Paid ' + fc(Math.round(latestVal)) + ' in ' + ML[lastComplete] + ' after missing ' + ML[lastComplete-1] + '. May include catch-up.'
+            detail: 'Paid ' + fc(Math.round(latestVal)) + ' in ' + ML[lastComplete] + ' after missing ' + ML[lastComplete-1] + '. Avg over ' + paidMonths.length + ' months: ' + fc(Math.round(avg)) + '/mo. May include catch-up.'
           });
         }
       }
@@ -3879,7 +3879,7 @@ function initOutliers(){
           alerts.push({
             entity, operator: op, type: 'high', sev: 1,
             avg, latest: latestVal, delta: pctChg,
-            detail: ML[lastComplete] + ': ' + fc(Math.round(latestVal)) + ' vs avg ' + fc(Math.round(avg)) + ' (+' + pctChg + '%). Possible new well or catch-up payment.'
+            detail: ML[lastComplete] + ': ' + fc(Math.round(latestVal)) + ' vs avg ' + fc(Math.round(avg)) + ' (+' + pctChg + '%). Based on ' + paidMonths.length + ' months of history. Possible new well or catch-up.'
           });
         }
       }
@@ -3892,7 +3892,7 @@ function initOutliers(){
           alerts.push({
             entity, operator: op, type: 'low', sev: 2,
             avg, latest: latestVal, delta: pctChg,
-            detail: ML[lastComplete] + ': ' + fc(Math.round(latestVal)) + ' vs avg ' + fc(Math.round(avg)) + ' (' + pctChg + '%). Significant drop in payment.'
+            detail: ML[lastComplete] + ': ' + fc(Math.round(latestVal)) + ' vs avg ' + fc(Math.round(avg)) + ' (' + pctChg + '%). Based on ' + paidMonths.length + ' months of history.'
           });
         }
       }
@@ -3921,13 +3921,16 @@ function initOutliers(){
   const nLow = alerts.filter(a=>a.type==='low').length;
   const nNew = alerts.filter(a=>a.type==='new').length;
   const missedRev = alerts.filter(a=>a.type==='missing').reduce((s,a)=>s+a.avg,0);
+  var evalMo = ML[lastComplete].replace('*','');
+  var priorMo = lastComplete > 0 ? ML[lastComplete-1].replace('*','') : '';
+  $('out-eval-month').textContent = evalMo;
   $('out-kpis').innerHTML =
-    '<div class="kpi r"><div class="l">Missing Payments</div><div class="v">' + nMissing + '</div><div class="d">Operators with $0 in ' + ML[lastComplete] + '</div></div>' +
-    '<div class="kpi a"><div class="l">Late Payments</div><div class="v">' + nLate + '</div><div class="d">Paid after skipping a month</div></div>' +
-    '<div class="kpi g"><div class="l">Unusually High</div><div class="v">' + nHigh + '</div><div class="d">Possible new wells or catch-ups</div></div>' +
-    '<div class="kpi p"><div class="l">Unusually Low</div><div class="v">' + nLow + '</div><div class="d">Significant payment drops</div></div>' +
-    '<div class="kpi"><div class="l">New Operators</div><div class="v">' + nNew + '</div><div class="d">First appeared recently</div></div>' +
-    '<div class="kpi t"><div class="l">Est. Missing Revenue</div><div class="v">' + fc(Math.round(missedRev)) + '</div><div class="d">Based on avg of missing operators</div></div>';
+    '<div class="kpi r"><div class="l">Missing Payments</div><div class="v">' + nMissing + '</div><div class="d">Expected to pay in ' + evalMo + ' but didn\u2019t</div></div>' +
+    '<div class="kpi a"><div class="l">Late Payments</div><div class="v">' + nLate + '</div><div class="d">Paid in ' + evalMo + ' after skipping ' + priorMo + '</div></div>' +
+    '<div class="kpi g"><div class="l">Unusually High</div><div class="v">' + nHigh + '</div><div class="d">' + evalMo + ' payment &gt; 2\u03C3 above avg</div></div>' +
+    '<div class="kpi p"><div class="l">Unusually Low</div><div class="v">' + nLow + '</div><div class="d">' + evalMo + ' payment &gt; 2\u03C3 below avg</div></div>' +
+    '<div class="kpi"><div class="l">New Operators</div><div class="v">' + nNew + '</div><div class="d">First payment in ' + priorMo + ' or ' + evalMo + '</div></div>' +
+    '<div class="kpi t"><div class="l">Est. Missing Revenue</div><div class="v">' + fc(Math.round(missedRev)) + '</div><div class="d">Sum of avg payments from missing operators</div></div>';
 
   // Populate entity filter
   var entSet = []; var seen = {};
