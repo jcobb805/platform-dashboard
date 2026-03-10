@@ -229,6 +229,10 @@
   <!-- PAYMENT ALERTS -->
   <div class="pane" id="p-outliers">
     <div class="kpis" id="out-kpis"></div>
+    <div class="g2">
+      <div class="tile"><h3>Alerts by Type</h3><div class="sub">Click a segment to filter the table below</div><div class="cw" style="height:280px"><canvas id="out-type-chart"></canvas></div></div>
+      <div class="tile"><h3>Top Entities by Alert Count</h3><div class="sub">Click a bar to filter the table below</div><div class="cw" style="height:280px"><canvas id="out-ent-chart"></canvas></div></div>
+    </div>
     <div class="tile">
       <h3>Payment Alerts</h3>
       <div class="sub">Operators flagged for missing payments, unusual amounts, or new activity &mdash; based on historical patterns per entity</div>
@@ -245,6 +249,7 @@
         <select id="out-ent-filter" style="padding:6px 12px;font-size:.82rem;border:1px solid var(--border);border-radius:6px;background:var(--card);color:var(--text-1);cursor:pointer;font-family:inherit;min-width:200px">
           <option value="all">All Entities</option>
         </select>
+        <button id="out-clear-filter" style="display:none;background:none;border:1px solid var(--border);color:var(--text-2);font-size:.75rem;padding:4px 12px;border-radius:6px;cursor:pointer;font-family:inherit">Clear Chart Filter</button>
       </div>
       <div style="overflow-x:auto"><table class="dt" id="out-tbl">
         <thead><tr>
@@ -259,10 +264,6 @@
         </tr></thead>
         <tbody id="out-tbody"></tbody>
       </table></div>
-    </div>
-    <div class="g2">
-      <div class="tile"><h3>Alerts by Type</h3><div class="sub">Distribution of alert categories</div><div class="cw" style="height:280px"><canvas id="out-type-chart"></canvas></div></div>
-      <div class="tile"><h3>Top Entities by Alert Count</h3><div class="sub">Entities with the most flagged operators</div><div class="cw" style="height:280px"><canvas id="out-ent-chart"></canvas></div></div>
     </div>
   </div>
 </div>
@@ -3966,9 +3967,15 @@ function initOutliers(){
     var entVal = $('out-ent-filter').value;
     var filtered = alerts.filter(function(a){ return (typeVal === 'all' || a.type === typeVal) && (entVal === 'all' || a.entity === entVal); });
     renderAlerts(filtered);
+    $('out-clear-filter').style.display = (typeVal !== 'all' || entVal !== 'all') ? 'inline-block' : 'none';
   }
   $('out-type-filter').addEventListener('change', applyFilters);
   $('out-ent-filter').addEventListener('change', applyFilters);
+  $('out-clear-filter').addEventListener('click', function(){
+    $('out-type-filter').value = 'all';
+    $('out-ent-filter').value = 'all';
+    applyFilters();
+  });
 
   // Doughnut chart — alerts by type
   var typeCounts = {missing:nMissing, late:nLate, high:nHigh, low:nLow, 'new':nNew};
@@ -3979,7 +3986,9 @@ function initOutliers(){
       labels: typeKeys.map(function(k){return typeLabels[k]}),
       datasets:[{data:typeKeys.map(function(k){return typeCounts[k]}),backgroundColor:typeKeys.map(function(k){return typeColors[k]}),borderWidth:2,borderColor:'#1a1a1a'}]
     },
-    options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'bottom',labels:{color:TK,font:FONT,padding:14}},tooltip:TT,datalabels:{display:false}}}
+    options:{responsive:true,maintainAspectRatio:false,
+      onClick:function(ev,els){if(!els.length)return;var ct=typeKeys[els[0].index];$('out-type-filter').value=$('out-type-filter').value===ct?'all':ct;applyFilters();},
+      plugins:{legend:{position:'bottom',labels:{color:TK,font:FONT,padding:14}},tooltip:TT,datalabels:{display:false}}}
   });
 
   // Bar chart — top entities by alert count
@@ -3994,6 +4003,7 @@ function initOutliers(){
     },
     options:{
       indexAxis:'y',responsive:true,maintainAspectRatio:false,
+      onClick:function(ev,els){if(!els.length)return;var ce=entSorted[els[0].index][0];$('out-ent-filter').value=$('out-ent-filter').value===ce?'all':ce;applyFilters();},
       scales:{x:{grid:{color:GR},ticks:{color:TK,font:FONT}},y:{grid:{display:false},ticks:{color:TK,font:{family:FONT.family,size:11}}}},
       plugins:{legend:{display:false},tooltip:TT,datalabels:{display:false}}
     }
